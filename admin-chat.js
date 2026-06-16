@@ -9,10 +9,14 @@
 
   var sb = supabaseClient;
   var _staff = null;       // الأدمن الحالي
+  var _staffName = 'فريق الدعم'; // اسم الأدمن (يظهر للزائر)
   var _convs = [];         // قائمة المحادثات
   var _conv = null;        // المحادثة المفتوحة
   var _msgChannel = null;  // اشتراك رسائل المحادثة المفتوحة
   var _listChannel = null; // اشتراك عام لتحديث القائمة/العدّاد
+  var _rt = null;          // قناة البثّ (كتابة/جلسة)
+  var _aiLastTyped = 0;    // تحديد معدّل بثّ الكتابة
+  var _aiTypingHide = null;
 
   /* ---------- 1) الأنماط ---------- */
   var css = ''
@@ -56,6 +60,20 @@
     + '.ai-adcard .r{font-size:.7rem;color:#94a3b8;margin-top:2px}';
   var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
 
+  /* ---------- 1.5) ترقية بصرية + مؤشّر الكتابة ---------- */
+  var css2 = ''
+    + '.ai-bubble{box-shadow:0 1px 2px rgba(15,23,42,.06);animation:aiPop .16s ease}'
+    + '@keyframes aiPop{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}'
+    + '.ai-bubble.them{border-radius:14px 14px 14px 4px}.ai-bubble.me{border-radius:14px 14px 4px 14px}'
+    + '.ai-sysline{align-self:center;background:rgba(15,23,42,.06);color:#475569;font-size:.72rem;font-weight:700;padding:4px 12px;border-radius:18px;margin:3px 0}'
+    + '.ai-typing{align-self:flex-end;background:#fff;border:1px solid #eef2f7;border-radius:14px 14px 14px 4px;padding:11px 14px;display:none}'
+    + '.ai-typing.show{display:flex;gap:4px;align-items:center}'
+    + '.ai-typing span{width:7px;height:7px;border-radius:50%;background:#cbd5e1;animation:aiTy 1.2s infinite}'
+    + '.ai-typing span:nth-child(2){animation-delay:.2s}.ai-typing span:nth-child(3){animation-delay:.4s}'
+    + '@keyframes aiTy{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-5px);opacity:1}}'
+    + '.ai-foot input{background:#f1f5f9;border-color:transparent}.ai-foot input:focus{background:#fff;border-color:#F6921E}';
+  var st2 = document.createElement('style'); st2.textContent = css2; document.head.appendChild(st2);
+
   /* ---------- 2) DOM ---------- */
   var panel = document.createElement('div');
   panel.className = 'ai-panel'; panel.id = 'aiPanel';
@@ -70,13 +88,33 @@
     + '    <button id="aiProfBtn" onclick="window._aiOpenProfile()" title="ملف العميل" style="display:none;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;cursor:pointer;font-size:.78rem;font-weight:800;border-radius:10px;padding:7px 11px;margin-left:6px">ملف العميل</button>'
     + '    <button id="aiEndBtn" onclick="window._aiEndSession()" title="إنهاء الجلسة وحذف المحادثة" style="display:none;background:#fef2f2;border:1px solid #fecaca;color:#ef4444;cursor:pointer;font-size:.78rem;font-weight:800;border-radius:10px;padding:7px 11px">إنهاء الجلسة</button></div>'
     + '  <div class="ai-body" id="aiBody"><div class="ai-pick">اختر محادثة من القائمة للردّ</div></div>'
-    + '  <div class="ai-foot"><input id="aiInput" placeholder="اكتب ردّك..." onkeydown="if(event.key===\'Enter\')window._aiSend()"><button onclick="window._aiSend()">&#10148;</button></div>'
+    + '  <div class="ai-foot"><input id="aiInput" placeholder="اكتب ردّك..." oninput="window._aiTyping&&window._aiTyping()" onkeydown="if(event.key===\'Enter\')window._aiSend()"><button onclick="window._aiSend()">&#10148;</button></div>'
     + '</div>';
   (document.getElementById('sectionInbox') || document.body).appendChild(panel);
 
   /* ---------- 3) أدوات ---------- */
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
   function fmtTime(ts) { try { return new Date(ts).toLocaleString('ar', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'numeric' }); } catch (e) { return ''; } }
+
+  /* ---------- البثّ المشترك مع الزائر (كتابة + جلسة) ---------- */
+  function aiJoinRT(convId) {
+    if (_rt) { sb.removeChannel(_rt); _rt = null; }
+    _rt = sb.channel('rt-' + convId, { config: { broadcast: { self: false } } })
+      .on('broadcast', { event: 'typing' }, function (p) { if (p.payload && p.payload.role === 'user') aiShowTyping(); })
+      .subscribe(function (status) { if (status === 'SUBSCRIBED') aiSendSession('start'); });
+  }
+  function aiSendSession(action) { if (_rt) _rt.send({ type: 'broadcast', event: 'session', payload: { action: action, name: _staffName } }); }
+  window._aiTyping = function () {
+    var now = Date.now();
+    if (_rt && now - _aiLastTyped > 1400) { _aiLastTyped = now; _rt.send({ type: 'broadcast', event: 'typing', payload: { role: 'admin', name: _staffName } }); }
+  };
+  function aiShowTyping() {
+    var body = document.getElementById('aiBody'); if (!body) return;
+    var t = document.getElementById('aiTyping');
+    if (!t) { t = document.createElement('div'); t.id = 'aiTyping'; t.className = 'ai-typing'; t.innerHTML = '<span></span><span></span><span></span>'; }
+    body.appendChild(t); t.classList.add('show'); body.scrollTop = body.scrollHeight;
+    clearTimeout(_aiTypingHide); _aiTypingHide = setTimeout(function () { if (t) t.classList.remove('show'); }, 2600);
+  }
 
   /* ---------- 4) العدّاد العام + الاشتراك ---------- */
   async function refreshBadge() {
@@ -140,7 +178,9 @@
     var div = document.createElement('div');
     div.className = 'ai-bubble ' + (m.sender_role === 'admin' ? 'me' : 'them');
     div.innerHTML = esc(m.body) + '<span class="time">' + fmtTime(m.created_at) + '</span>';
-    body.appendChild(div); body.scrollTop = body.scrollHeight;
+    body.appendChild(div);
+    var t = document.getElementById('aiTyping'); if (t) body.appendChild(t);
+    body.scrollTop = body.scrollHeight;
   }
   async function markRead(convId) {
     try { await sb.from('messages').update({ read: true }).eq('conversation_id', convId).eq('sender_role', 'user').eq('read', false); } catch (e) {}
@@ -178,6 +218,7 @@
     else if (!r.data.length) { body.innerHTML += '<div class="ai-pick" style="margin:14px auto">لا رسائل بعد — اكتب ردّك بالأسفل</div>'; }
     else r.data.forEach(renderMsg);
     subscribeThread(convId);
+    aiJoinRT(convId);          // بثّ "تم بدء الجلسة" + استقبال كتابة الزائر
     markRead(convId);
     loadConversations();
     setTimeout(function () { document.getElementById('aiInput').focus(); }, 100);
@@ -187,14 +228,17 @@
     document.getElementById('aiList').classList.remove('hide');
     document.getElementById('aiEndBtn').style.display = 'none';
     document.getElementById('aiProfBtn').style.display = 'none';
+    if (_rt) { sb.removeChannel(_rt); _rt = null; }
   };
   window._aiEndSession = async function () {
     if (!_conv) return;
     if (!confirm('إنهاء الجلسة وحذف هذه المحادثة نهائياً؟')) return;
     var id = _conv.id;
+    aiSendSession('end');      // أبلغ الزائر "تم إنهاء الجلسة" قبل الحذف
     var r = await sb.from('conversations').delete().eq('id', id);
     if (r.error) { alert('تعذّر الحذف: ' + r.error.message); return; }
     if (_msgChannel) { sb.removeChannel(_msgChannel); _msgChannel = null; }
+    if (_rt) { sb.removeChannel(_rt); _rt = null; }
     _conv = null;
     window._aiBackList();
     loadConversations();
@@ -205,7 +249,7 @@
     if (!text || !_conv || !_staff) return;
     inp.value = '';
     renderMsg({ sender_role: 'admin', body: text, created_at: new Date().toISOString() });
-    var r = await sb.from('messages').insert({ conversation_id: _conv.id, sender_id: _staff.id, sender_role: 'admin', body: text });
+    var r = await sb.from('messages').insert({ conversation_id: _conv.id, sender_id: _staff.id, sender_role: 'admin', body: text, sender_name: _staffName });
     if (r.error) { alert('تعذّر الإرسال: ' + r.error.message); return; }
     try { await sb.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', _conv.id); } catch (e) {}
   };
@@ -227,12 +271,19 @@
   };
 
   /* ---------- 8) تشغيل ---------- */
+  async function loadStaffName() {
+    if (!_staff) return;
+    try {
+      var pr = await sb.from('profiles').select('full_name').eq('user_id', _staff.id).maybeSingle();
+      _staffName = (pr.data && pr.data.full_name) || (_staff.user_metadata && _staff.user_metadata.full_name) || 'فريق الدعم';
+    } catch (e) { _staffName = (_staff.user_metadata && _staff.user_metadata.full_name) || 'فريق الدعم'; }
+  }
   sb.auth.getUser().then(function (s) {
     _staff = s.data ? s.data.user : null;
-    if (_staff) { refreshBadge(); subscribeList(); }
+    if (_staff) { loadStaffName(); refreshBadge(); subscribeList(); }
   });
   sb.auth.onAuthStateChange(function (e, session) {
     _staff = session ? session.user : null;
-    if (_staff) { refreshBadge(); subscribeList(); }
+    if (_staff) { loadStaffName(); refreshBadge(); subscribeList(); }
   });
 })();

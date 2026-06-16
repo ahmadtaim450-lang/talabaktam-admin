@@ -1,4 +1,4 @@
-const CACHE_NAME = 'talbaktem-admin-v3';
+const CACHE_NAME = 'talbaktem-admin-v6';
 const STATIC_ASSETS = [
   './',
   './index.html',

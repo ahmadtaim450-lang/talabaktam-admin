@@ -117,6 +117,13 @@ function doLogout() {
   }
 }
 
+// يحوّل قيمة مخزّنة (مسار أو رابط كامل) إلى مسار داخل حاوية ads للحذف
+function toStoragePath(v) {
+  if (!v) return '';
+  const m = String(v).match(/\/ads\/(.+)$/);   // رابط كامل ينتهي بـ /ads/<path>
+  return m ? decodeURIComponent(m[1].split('?')[0]) : String(v);
+}
+
 // ===== SUPABASE CRUD =====
 async function fbSaveAd(ad) {
   if (ad.id) {
@@ -129,8 +136,8 @@ async function fbSaveAd(ad) {
   return ad;
 }
 async function fbDeleteAd(adId, imageIds) {
-  // حذف الصور من Supabase Storage
-  const paths = (imageIds || []).filter(Boolean);
+  // حذف الصور من Supabase Storage (يدعم المسار أو الرابط الكامل)
+  const paths = (imageIds || []).map(toStoragePath).filter(Boolean);
   if (paths.length) { try { await supabaseClient.storage.from('ads').remove(paths); } catch(e) {} }
   await supabaseClient.from('ads').delete().eq('id', adId);
 }
@@ -1084,8 +1091,13 @@ async function deleteAd(id) {
   if (USE_FIREBASE) {
     try {
       const ad = ads.find(a => String(a.id) === String(id));
-      const paths = (ad && ad.image_ids ? ad.image_ids : []).filter(Boolean);
-      if (paths.length) { try { await supabaseClient.storage.from('ads').remove(paths); } catch(e) {} }
+      // استخدم image_ids إن وُجد، وإلا استخرج المسارات من روابط images — ويدعم الرابط الكامل
+      const raw = (ad && ad.image_ids && ad.image_ids.length) ? ad.image_ids : (ad && ad.images ? ad.images : []);
+      const paths = raw.map(toStoragePath).filter(Boolean);
+      if (paths.length) {
+        const rm = await supabaseClient.storage.from('ads').remove(paths);
+        if (rm.error) console.error('storage remove error:', rm.error);
+      }
       await supabaseClient.from('ads').delete().eq('id', id);
       ads = await loadAdsFirebase();
     } catch(e) { toast('خطأ بالحذف: ' + e.message, 'error'); return; }
