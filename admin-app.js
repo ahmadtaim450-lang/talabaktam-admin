@@ -34,11 +34,6 @@ function toRow(ad) {
   return row;
 }
 
-// ===== CLOUDINARY CONFIG =====
-const CLOUDINARY_CLOUD = 'doc9zocnw';
-const CLOUDINARY_PRESET = 'talabak.album.dev';
-const CLOUDFLARE_WORKER_URL = 'https://orange-unit-fd89.gggghvv79.workers.dev';
-
 // ===== AUTH =====
 // أضف مؤشر تحميل على شاشة اللوغين ريثما يتحقق Firebase
 let authResolved = false;
@@ -122,14 +117,6 @@ function doLogout() {
   }
 }
 
-// يجلب توكن الجلسة الحالي (لإرساله إلى Worker حذف الصور)
-async function getAuthToken() {
-  try {
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    return session ? session.access_token : '';
-  } catch(e) { return ''; }
-}
-
 // ===== SUPABASE CRUD =====
 async function fbSaveAd(ad) {
   if (ad.id) {
@@ -142,18 +129,9 @@ async function fbSaveAd(ad) {
   return ad;
 }
 async function fbDeleteAd(adId, imageIds) {
-  // حذف الصور من Cloudinary عبر Worker
-  const token = await getAuthToken();
-  for (const pid of (imageIds || [])) {
-    try {
-      await fetch(CLOUDFLARE_WORKER_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ public_id: pid })
-      });
-    } catch(e) {
-      await supabaseClient.from('failed_deletions').insert({ public_id: pid, ad_id: String(adId), resolved: false });
-    }
-  }
+  // حذف الصور من Supabase Storage
+  const paths = (imageIds || []).filter(Boolean);
+  if (paths.length) { try { await supabaseClient.storage.from('ads').remove(paths); } catch(e) {} }
   await supabaseClient.from('ads').delete().eq('id', adId);
 }
 async function fbLoadAds() {
@@ -161,31 +139,6 @@ async function fbLoadAds() {
   return (data || []).map(mapAdRow);
 }
 
-// ===== CLOUDINARY UPLOAD =====
-function openCloudinaryUpload(callback) {
-  cloudinary.openUploadWidget({
-    cloudName: CLOUDINARY_CLOUD,
-    uploadPreset: CLOUDINARY_PRESET,
-    folder: 'talbaktem',
-    maxFiles: 5,
-    maxFileSize: 5000000,
-    cropping: false,
-    multiple: true,
-    resourceType: 'image',
-    clientAllowedFormats: ['jpg', 'jpeg', 'png', 'webp'],
-    language: 'ar',
-    text: { 'ar': { 'or': 'أو', 'menu.files': 'ملفاتي', 'menu.web': 'رابط', 'menu.camera': 'كاميرا' } }
-  }, (error, result) => {
-    if (!error && result && result.event === 'success') {
-      callback({
-        url: result.info.secure_url,
-        public_id: result.info.public_id,
-        width: result.info.width,
-        height: result.info.height
-      });
-    }
-  });
-}
 
 /* ===== DATA ===== */
 const CATS = [
@@ -843,43 +796,26 @@ function buildFormHTML(catId, data = {}) {
 /* ===== IMAGE UPLOAD HELPERS ===== */
 let uploadedImages = [{}, {}, {}, {}, {}]; // stores {url, public_id} for each slot
 
-function handleImgUpload(idx, input) {
+async function handleImgUpload(idx, input) {
   const file = input.files[0];
   if (!file) return;
-  
-  if (USE_FIREBASE) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('upload_preset', CLOUDINARY_PRESET);
-    formData.append('folder', 'talbaktem');
-    
-    const slot = document.getElementById(`imgSlot${idx}`);
-    slot.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:12px;color:var(--s400)">جاري الرفع...</div>`;
-    
-    fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, {
-      method: 'POST', body: formData
-    }).then(r => r.json()).then(res => {
-      uploadedImages[idx] = { url: res.secure_url, public_id: res.public_id };
-      slot.innerHTML = `
-        <img src="${res.secure_url}" id="imgPreview${idx}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">
-        <button class="form-img-remove" onclick="event.stopPropagation();removeImg(${idx})">✕</button>
-        <input type="file" id="imgInput${idx}" accept="image/*" style="display:none" onchange="handleImgUpload(${idx}, this)">`;
-      toast('تم رفع الصورة ✓', 'success');
-    }).catch(e => {
-      toast('خطأ برفع الصورة: ' + e.message, 'error');
-      removeImg(idx);
-    });
-  } else {
-    const reader = new FileReader();
-    reader.onload = function(e) {
-      uploadedImages[idx] = { url: e.target.result, public_id: '' };
-      const slot = document.getElementById(`imgSlot${idx}`);
-      slot.innerHTML = `
-        <img src="${e.target.result}" id="imgPreview${idx}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">
-        <button class="form-img-remove" onclick="event.stopPropagation();removeImg(${idx})">✕</button>
-        <input type="file" id="imgInput${idx}" accept="image/*" style="display:none" onchange="handleImgUpload(${idx}, this)">`;
-    };
-    reader.readAsDataURL(file);
+  const slot = document.getElementById(`imgSlot${idx}`);
+  slot.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:12px;color:var(--s400)">جاري الرفع...</div>`;
+  try {
+    const ext = ((file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '')) || 'jpg';
+    const path = Date.now() + '-' + Math.random().toString(36).slice(2, 8) + '.' + ext;
+    const up = await supabaseClient.storage.from('ads').upload(path, file, { cacheControl: '3600', upsert: false, contentType: file.type || undefined });
+    if (up.error) throw up.error;
+    const url = supabaseClient.storage.from('ads').getPublicUrl(path).data.publicUrl;
+    uploadedImages[idx] = { url: url, public_id: path }; // public_id = مسار الملف في Storage (للحذف)
+    slot.innerHTML = `
+      <img src="${url}" id="imgPreview${idx}" style="width:100%;height:100%;object-fit:cover;border-radius:10px">
+      <button class="form-img-remove" onclick="event.stopPropagation();removeImg(${idx})">✕</button>
+      <input type="file" id="imgInput${idx}" accept="image/*" style="display:none" onchange="handleImgUpload(${idx}, this)">`;
+    toast('تم رفع الصورة ✓', 'success');
+  } catch (e) {
+    toast('خطأ برفع الصورة: ' + (e.message || e), 'error');
+    removeImg(idx);
   }
 }
 
@@ -1148,19 +1084,8 @@ async function deleteAd(id) {
   if (USE_FIREBASE) {
     try {
       const ad = ads.find(a => String(a.id) === String(id));
-      if (ad && ad.image_ids && ad.image_ids.length) {
-        const token = await getAuthToken();
-        for (const pid of ad.image_ids) {
-          try {
-            await fetch(CLOUDFLARE_WORKER_URL, {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-              body: JSON.stringify({ public_id: pid })
-            });
-          } catch(e) {
-            await supabaseClient.from('failed_deletions').insert({ public_id: pid, ad_id: String(id), resolved: false });
-          }
-        }
-      }
+      const paths = (ad && ad.image_ids ? ad.image_ids : []).filter(Boolean);
+      if (paths.length) { try { await supabaseClient.storage.from('ads').remove(paths); } catch(e) {} }
       await supabaseClient.from('ads').delete().eq('id', id);
       ads = await loadAdsFirebase();
     } catch(e) { toast('خطأ بالحذف: ' + e.message, 'error'); return; }

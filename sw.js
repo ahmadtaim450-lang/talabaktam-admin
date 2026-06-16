@@ -26,13 +26,10 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
 
-  // Firebase, Cloudinary, external APIs — دايماً من الشبكة
+  // Supabase / external APIs — دايماً من الشبكة
   if (
-    url.hostname.includes('firestore') ||
-    url.hostname.includes('googleapis') ||
-    url.hostname.includes('cloudinary') ||
-    url.hostname.includes('workers.dev') ||
-    url.hostname.includes('firebase')
+    url.hostname.includes('supabase') ||
+    url.hostname.includes('googleapis')
   ) {
     e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
     return;
